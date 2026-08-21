@@ -72,7 +72,7 @@ def fetch(city, loc, term):
         lat = vo.get("latitude"); lng = vo.get("longitude")
         if lat and lng: lat, lng = float(lat), float(lng)
         else: lat, lng = CITY_COORDS.get(city, (37.7749, -122.4194))
-        out.append({"external_id": f"eb-{ev.get("id","")}",
+        out.append({"external_id": f"eb-{ev.get('id','')}",
             "name": name, "venue": vo.get("name", city),
             "city": ad.get("city", city), "state": "CA", "region": "west",
             "lat": lat, "lng": lng, "type": classify(name),
