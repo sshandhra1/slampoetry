@@ -7,7 +7,7 @@ on:
 
 jobs:
   scrape:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
 
     steps:
@@ -25,7 +25,7 @@ jobs:
         run: pip install -r scraper/requirements.txt
 
       - name: Install Playwright browsers
-        run: playwright install chromium --with-deps
+        run: playwright install --with-deps chromium
 
       - name: Run scraper
         run: python scraper/collect_events.py
