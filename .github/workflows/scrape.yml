@@ -29,4 +29,4 @@ jobs:
         env:
           SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          EVENTBRITE_TOKEN:     ${{ secrets.EVENTBRITE_TOKEN }}
+          TICKETMASTER_KEY:     ${{ secrets.TICKETMASTER_KEY }}
