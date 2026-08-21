@@ -50,12 +50,15 @@ def scrape_eventbrite(city_slug, city_name, term):
         log.error("ScraperAPI error %s/%s: %s", city_name, term, e)
         return []
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    html = resp.text
+    log.info("Page size: %d bytes", len(html))
+    soup = BeautifulSoup(html, "html.parser")
     events = []
 
+    # Strategy 1: JSON-LD
     for script in soup.find_all("script", type="application/ld+json"):
         try:
-            data = json.loads(script.string)
+            data = json.loads(script.string or "")
             items = data if isinstance(data, list) else [data]
             for item in items:
                 if item.get("@type") != "Event":
@@ -92,9 +95,41 @@ def scrape_eventbrite(city_slug, city_name, term):
                     "url": url, "source": "eventbrite",
                 })
         except Exception as e:
-            log.debug("parse error: %s", e)
+            log.debug("JSON-LD error: %s", e)
 
-    log.info("  %s / %s -> %d events", city_name, term, len(events))
+    if events:
+        log.info("  %s / %s -> %d events (JSON-LD)", city_name, term, len(events))
+        return events
+
+    # Strategy 2: Find event links in HTML (event pages are /e/name-id)
+    seen_urls = set()
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if "/e/" not in href:
+            continue
+        if "eventbrite.com" not in href and not href.startswith("/e/"):
+            continue
+        full_url = href if href.startswith("http") else "https://www.eventbrite.com" + href
+        if full_url in seen_urls:
+            continue
+        seen_urls.add(full_url)
+        name = a.get_text(strip=True)
+        if len(name) < 5:
+            continue
+        lat, lng = CITY_COORDS.get(city_name, (37.7749, -122.4194))
+        ext_id = "eb-" + re.sub(r"[^a-z0-9]", "", full_url.lower())[-40:]
+        events.append({
+            "external_id": ext_id, "name": name, "venue": city_name,
+            "city": city_name, "state": "CA", "region": "west",
+            "lat": lat, "lng": lng, "type": classify_type(name),
+            "date": None, "time": None, "price": "TBD",
+            "url": full_url, "source": "eventbrite",
+        })
+
+    log.info("  %s / %s -> %d events (link parse)", city_name, term, len(events))
+    # Log a sample of links found for debugging
+    all_links = [a["href"] for a in soup.find_all("a", href=True)]
+    log.info("  Total links on page: %d, sample: %s", len(all_links), str(all_links[:5]))
     return events
 
 def upsert_events(events):
