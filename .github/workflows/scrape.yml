@@ -29,4 +29,4 @@ jobs:
         env:
           SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          TICKETMASTER_KEY:     ${{ secrets.TICKETMASTER_KEY }}
+          SCRAPER_API_KEY:      ${{ secrets.SCRAPER_API_KEY }}

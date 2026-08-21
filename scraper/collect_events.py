@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-import os, logging, requests
+import os, json, re, logging, requests
+from bs4 import BeautifulSoup
 from datetime import datetime
 from supabase import create_client, Client
 
@@ -8,19 +9,22 @@ log = logging.getLogger(__name__)
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
-TM_KEY       = os.environ["TICKETMASTER_KEY"]
+SCRAPER_KEY  = os.environ["SCRAPER_API_KEY"]
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-CITIES = [
-    ("San Francisco", "CA"), ("Oakland", "CA"),
-    ("Berkeley", "CA"), ("San Jose", "CA"), ("San Rafael", "CA"),
+SEARCHES = [
+    ("san-francisco", "San Francisco"),
+    ("oakland", "Oakland"),
+    ("berkeley", "Berkeley"),
+    ("san-jose", "San Jose"),
 ]
-SEARCH_TERMS = ["poetry", "slam poetry", "spoken word", "open mic poetry"]
+TERMS = ["poetry", "spoken-word", "open-mic"]
 CITY_COORDS = {
-    "San Francisco": (37.7749, -122.4194), "Oakland": (37.8044, -122.2712),
-    "Berkeley": (37.8716, -122.2727), "San Jose": (37.3382, -121.8863),
-    "San Rafael": (37.9735, -122.5311),
+    "San Francisco": (37.7749, -122.4194),
+    "Oakland": (37.8044, -122.2712),
+    "Berkeley": (37.8716, -122.2727),
+    "San Jose": (37.3382, -121.8863),
 }
 TYPE_KEYWORDS = {
     "slam": ["slam", "slam poetry"],
@@ -36,69 +40,61 @@ def classify_type(name):
             return t
     return "reading"
 
-def parse_price(ev):
-    ranges = ev.get("priceRanges")
-    if not ranges:
-        return "Free"
-    lo = ranges[0].get("min")
-    hi = ranges[0].get("max")
-    if lo and hi and lo != hi:
-        return "$%.0f-$%.0f" % (lo, hi)
-    elif lo:
-        return "$%.0f" % lo
-    return "TBD"
-
-def fetch_events(city, state, term):
-    url = "https://app.ticketmaster.com/discovery/v2/events.json"
-    params = {
-        "apikey": TM_KEY, "keyword": term, "city": city,
-        "stateCode": state, "countryCode": "US",
-        "radius": 30, "unit": "miles", "size": 50,
-        "startDateTime": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-    }
+def scrape_eventbrite(city_slug, city_name, term):
+    target = "https://www.eventbrite.com/d/ca--" + city_slug + "/" + term + "/"
+    api_url = "http://api.scraperapi.com?api_key=" + SCRAPER_KEY + "&url=" + target + "&render=true"
     try:
-        resp = requests.get(url, params=params, timeout=15)
+        resp = requests.get(api_url, timeout=60)
         resp.raise_for_status()
-        data = resp.json()
     except Exception as e:
-        log.error("API error %s / %s: %s", city, term, e)
+        log.error("ScraperAPI error %s/%s: %s", city_name, term, e)
         return []
-    raw_events = data.get("_embedded", {}).get("events", [])
-    log.info("  %s / '%s' -> %d raw", city, term, len(raw_events))
+
+    soup = BeautifulSoup(resp.text, "html.parser")
     events = []
-    for ev in raw_events:
-        name = ev.get("name", "").strip()
-        if not name:
-            continue
-        dates = ev.get("dates", {}).get("start", {})
-        date_str = dates.get("localDate")
-        time_str = dates.get("localTime")
-        if time_str:
-            try:
-                t = datetime.strptime(time_str, "%H:%M:%S")
-                time_str = t.strftime("%-I:%M %p")
-            except Exception:
-                pass
-        venues = ev.get("_embedded", {}).get("venues", [{}])
-        venue = venues[0] if venues else {}
-        venue_name = venue.get("name", city)
-        ev_city = venue.get("city", {}).get("name", city)
-        loc = venue.get("location", {})
+
+    for script in soup.find_all("script", type="application/ld+json"):
         try:
-            lat = float(loc.get("latitude", 0)) or None
-            lng = float(loc.get("longitude", 0)) or None
-        except Exception:
-            lat = lng = None
-        if not lat or not lng:
-            lat, lng = CITY_COORDS.get(city, (37.7749, -122.4194))
-        ext_id = "tm-" + str(ev.get("id", ""))
-        events.append({
-            "external_id": ext_id, "name": name, "venue": venue_name,
-            "city": ev_city, "state": "CA", "region": "west",
-            "lat": lat, "lng": lng, "type": classify_type(name),
-            "date": date_str, "time": time_str, "price": parse_price(ev),
-            "url": ev.get("url", ""), "source": "ticketmaster",
-        })
+            data = json.loads(script.string)
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                if item.get("@type") != "Event":
+                    continue
+                name = item.get("name", "").strip()
+                if not name:
+                    continue
+                url = item.get("url", "")
+                start = item.get("startDate", "")
+                date_str = start[:10] if start else None
+                time_str = None
+                if start and "T" in start:
+                    try:
+                        t = datetime.fromisoformat(start.replace("Z", "+00:00"))
+                        time_str = t.strftime("%-I:%M %p")
+                    except Exception:
+                        pass
+                loc = item.get("location", {})
+                venue_name = loc.get("name", city_name)
+                addr = loc.get("address", {})
+                ev_city = addr.get("addressLocality", city_name) if isinstance(addr, dict) else city_name
+                offers = item.get("offers", {})
+                if isinstance(offers, list):
+                    offers = offers[0] if offers else {}
+                price_val = offers.get("price", "")
+                price = "Free" if str(price_val) == "0" else (str(price_val) if price_val else "TBD")
+                lat, lng = CITY_COORDS.get(city_name, (37.7749, -122.4194))
+                ext_id = "eb-" + re.sub(r"[^a-z0-9]", "", url.lower())[-40:]
+                events.append({
+                    "external_id": ext_id, "name": name, "venue": venue_name,
+                    "city": ev_city or city_name, "state": "CA", "region": "west",
+                    "lat": lat, "lng": lng, "type": classify_type(name),
+                    "date": date_str, "time": time_str, "price": price,
+                    "url": url, "source": "eventbrite",
+                })
+        except Exception as e:
+            log.debug("parse error: %s", e)
+
+    log.info("  %s / %s -> %d events", city_name, term, len(events))
     return events
 
 def upsert_events(events):
@@ -106,16 +102,16 @@ def upsert_events(events):
         log.info("Nothing to upsert.")
         return
     result = supabase.table("events").upsert(events, on_conflict="external_id").execute()
-    log.info("Upserted %d events into Supabase", len(result.data))
+    log.info("Upserted %d events", len(result.data))
 
 def run():
     all_events = []
-    for city, state in CITIES:
-        for term in SEARCH_TERMS:
-            all_events.extend(fetch_events(city, state, term))
+    for city_slug, city_name in SEARCHES:
+        for term in TERMS:
+            all_events.extend(scrape_eventbrite(city_slug, city_name, term))
     seen = {e["external_id"]: e for e in all_events}
     unique = list(seen.values())
-    log.info("Total unique events: %d", len(unique))
+    log.info("Total unique: %d", len(unique))
     upsert_events(unique)
     log.info("Done.")
 
