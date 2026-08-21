@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SlamPoetryFabric | Discover Poetry Events</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        accent: '#FF1616',
+                        dark: {
+                            900: '#0a0a0a',
+                            800: '#121212',
+                            700: '#1a1a1a',
+                            600: '#242424',
+                            500: '#2a2a2a',
+                            400: '#333333',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background: #0a0a0a; }
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #1a1a1a; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #444; }
+
+        /* Map dark mode */
+        #map { border-radius: 12px; }
+        .leaflet-tile-pane { filter: brightness(0.7) invert(1) contrast(1.1) hue-rotate(200deg) saturate(0.3) brightness(0.8); }
+        .leaflet-control-attribution { background: rgba(0,0,0,0.7) !important; color: #666 !important; }
+        .leaflet-control-attribution a { color: #888 !important; }
+        .leaflet-popup-content-wrapper { background: #1a1a1a; color: #fff; border-radius: 12px; }
+        .leaflet-popup-tip { background: #1a1a1a; }
+
+        /* Card hover effects */
+        .city-card:hover { transform: translateY(-2px); background: #242424; }
+        .category-card:hover { transform: scale(1.02); }
+        .event-card:hover { background: #242424; }
+        .event-card.active { border-color: #FF1616; background: rgba(255,22,22,0.1); }
+
+        /* View transitions */
+        .view-content { transition: opacity 0.2s ease; }
+
+        /* Nav tab active */
+        .nav-tab.active { color: #fff; }
+        .nav-tab.active::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: #FF1616;
+        }
+    </style>
+</head>
+<body class="bg-dark-900 text-white min-h-screen">
+    <!-- Navigation -->
+    <nav class="border-b border-dark-600 sticky top-0 z-50 bg-dark-900/95 backdrop-blur-sm">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6">
+            <div class="flex items-center justify-between h-16">
+                <!-- Logo -->
+                <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 bg-accent rounded-lg flex items-center justify-content-center">
+                        <span class="text-lg">🎤</span>
+                    </div>
+                    <span class="text-lg font-semibold">SlamPoetryFabric</span>
+                </div>
+
+                <!-- Nav Tabs -->
+                <div class="flex items-center gap-1">
+                    <button id="nav-discover" class="nav-tab active relative px-4 py-2 text-sm font-medium text-gray-400 hover:text-white transition">
+                        Discover
+                    </button>
+                    <button id="nav-map" class="nav-tab relative px-4 py-2 text-sm font-medium text-gray-400 hover:text-white transition">
+                        Map
+                    </button>
+                </div>
+
+                <!-- Stats -->
+                <div class="flex items-center gap-6 text-sm">
+                    <div>
+                        <span id="stat-events" class="font-semibold text-white">45</span>
+                        <span class="text-gray-500 ml-1">Events</span>
+                    </div>
+                    <div>
+                        <span id="stat-cities" class="font-semibold text-white">15</span>
+                        <span class="text-gray-500 ml-1">Cities</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- DISCOVER VIEW -->
+    <div id="discover-view" class="view-content">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+            <!-- Hero -->
+            <div class="mb-12">
+                <h1 class="text-4xl font-bold mb-3">Discover Events</h1>
+                <p class="text-gray-400 text-lg">Explore poetry events near you, browse by category, or check out upcoming shows.</p>
+            </div>
+
+            <!-- Browse by Category -->
+            <section class="mb-12">
+                <h2 class="text-xl font-semibold mb-6">Browse by Category</h2>
+                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+                    <button data-category="slam" class="category-card bg-dark-700 hover:bg-dark-600 rounded-xl p-4 text-left transition transform">
+                        <div class="text-2xl mb-2">🎤</div>
+                        <div class="font-medium">Slam</div>
+                        <div class="text-sm text-gray-500" id="count-slam">0 Events</div>
+                    </button>
+                    <button data-category="open_mic" class="category-card bg-dark-700 hover:bg-dark-600 rounded-xl p-4 text-left transition transform">
+                        <div class="text-2xl mb-2">🎙️</div>
+                        <div class="font-medium">Open Mic</div>
+                        <div class="text-sm text-gray-500" id="count-open_mic">0 Events</div>
+                    </button>
+                    <button data-category="reading" class="category-card bg-dark-700 hover:bg-dark-600 rounded-xl p-4 text-left transition transform">
+                        <div class="text-2xl mb-2">📖</div>
+                        <div class="font-medium">Reading</div>
+                        <div class="text-sm text-gray-500" id="count-reading">0 Events</div>
+                    </button>
+                    <button data-category="workshop" class="category-card bg-dark-700 hover:bg-dark-600 rounded-xl p-4 text-left transition transform">
+                        <div class="text-2xl mb-2">✍️</div>
+                        <div class="font-medium">Workshop</div>
+                        <div class="text-sm text-gray-500" id="count-workshop">0 Events</div>
+                    </button>
+                    <button data-category="festival" class="category-card bg-dark-700 hover:bg-dark-600 rounded-xl p-4 text-left transition transform">
+                        <div class="text-2xl mb-2">🎉</div>
+                        <div class="font-medium">Festival</div>
+                        <div class="text-sm text-gray-500" id="count-festival">0 Events</div>
+                    </button>
+                </div>
+            </section>
+
+            <!-- Explore Local Events -->
+            <section class="mb-12">
+                <div class="flex items-center justify-between mb-6">
+                    <h2 class="text-xl font-semibold">Explore Local Events</h2>
+                </div>
+
+                <!-- Region Tabs -->
+                <div class="flex gap-4 mb-6 text-sm overflow-x-auto pb-2">
+                    <button data-region="all" class="region-tab text-white font-medium whitespace-nowrap">All Regions</button>
+                    <button data-region="northeast" class="region-tab text-gray-500 hover:text-white whitespace-nowrap">Northeast</button>
+                    <button data-region="southeast" class="region-tab text-gray-500 hover:text-white whitespace-nowrap">Southeast</button>
+                    <button data-region="midwest" class="region-tab text-gray-500 hover:text-white whitespace-nowrap">Midwest</button>
+                    <button data-region="southwest" class="region-tab text-gray-500 hover:text-white whitespace-nowrap">Southwest</button>
+                    <button data-region="west" class="region-tab text-gray-500 hover:text-white whitespace-nowrap">West</button>
+                    <button data-region="pacific" class="region-tab text-gray-500 hover:text-white whitespace-nowrap">Pacific NW</button>
+                </div>
+
+                <!-- City Cards Grid -->
+                <div id="city-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                    <!-- Populated by JS -->
+                </div>
+            </section>
+
+            <!-- Upcoming Events -->
+            <section>
+                <div class="flex items-center justify-between mb-6">
+                    <h2 class="text-xl font-semibold">Upcoming Events</h2>
+                    <button id="view-all-map" class="text-sm text-accent hover:underline">View on Map →</button>
+                </div>
+                <div id="discover-events" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <!-- Populated by JS -->
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <!-- MAP VIEW -->
+    <div id="map-view" class="view-content hidden">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+            <!-- Filter Bar -->
+            <div class="flex items-center gap-3 mb-6 overflow-x-auto pb-2">
+                <span class="text-sm text-gray-500 whitespace-nowrap">Filter:</span>
+                <button data-type="all" class="type-btn px-4 py-2 rounded-full text-sm font-medium bg-white text-black whitespace-nowrap">All</button>
+                <button data-type="slam" class="type-btn px-4 py-2 rounded-full text-sm font-medium bg-dark-600 text-gray-300 hover:bg-dark-500 whitespace-nowrap">🎤 Slam</button>
+                <button data-type="open_mic" class="type-btn px-4 py-2 rounded-full text-sm font-medium bg-dark-600 text-gray-300 hover:bg-dark-500 whitespace-nowrap">🎙️ Open Mic</button>
+                <button data-type="reading" class="type-btn px-4 py-2 rounded-full text-sm font-medium bg-dark-600 text-gray-300 hover:bg-dark-500 whitespace-nowrap">📖 Reading</button>
+                <button data-type="workshop" class="type-btn px-4 py-2 rounded-full text-sm font-medium bg-dark-600 text-gray-300 hover:bg-dark-500 whitespace-nowrap">✍️ Workshop</button>
+                <button data-type="festival" class="type-btn px-4 py-2 rounded-full text-sm font-medium bg-dark-600 text-gray-300 hover:bg-dark-500 whitespace-nowrap">🎉 Festival</button>
+            </div>
+
+            <div class="grid lg:grid-cols-3 gap-6">
+                <!-- Map -->
+                <div class="lg:col-span-2">
+                    <div id="map" class="w-full h-[520px] bg-dark-700 border border-dark-600"></div>
+                    <p class="text-sm text-gray-600 mt-2 text-center">Zoom and pan to explore • Click markers or cards for details</p>
+                </div>
+
+                <!-- Event List -->
+                <div class="lg:col-span-1">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-lg font-semibold">Events</h2>
+                        <span id="filtered-count" class="text-sm text-gray-500">45 events</span>
+                    </div>
+                    <div id="event-list" class="space-y-3 max-h-[520px] overflow-y-auto pr-2">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="border-t border-dark-600 mt-16 py-8">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 text-center">
+            <div class="flex items-center justify-center gap-2 mb-3">
+                <div class="w-6 h-6 bg-accent rounded flex items-center justify-center text-sm">🎤</div>
+                <span class="font-semibold">SlamPoetryFabric</span>
+            </div>
+            <p class="text-gray-500 text-sm">Real events from Eventbrite • February 2026</p>
+        </div>
+    </footer>
+
+    <script>
+        // =====================================================
+        // SUPABASE CONFIG — replace these two values after
+        // creating your project at supabase.com
+        // =====================================================
+        const SUPABASE_URL  = 'YOUR_SUPABASE_URL';   // e.g. https://xxxx.supabase.co
+        const SUPABASE_ANON = 'YOUR_SUPABASE_ANON_KEY';
+
+        const _sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+
+        // =====================================================
+        // EVENTS — loaded live from Supabase
+        // =====================================================
+        let events = [];   // filled by loadEvents() below
+
+        // =====================================================
+        // CITY DATA
+        // =====================================================
+        const cities = [
+            { name: "San Francisco", state: "CA", region: "west", lat: 37.7749, lng: -122.4194 },
+            { name: "Berkeley", state: "CA", region: "west", lat: 37.8716, lng: -122.2727 },
+            { name: "Oakland", state: "CA", region: "west", lat: 37.8044, lng: -122.2712 },
+            { name: "Palo Alto", state: "CA", region: "west", lat: 37.4419, lng: -122.1430 },
+            { name: "San Rafael", state: "CA", region: "west", lat: 37.9735, lng: -122.5311 },
+            { name: "Walnut Creek", state: "CA", region: "west", lat: 37.9058, lng: -122.0651 },
+            { name: "Danville", state: "CA", region: "west", lat: 37.8204, lng: -122.0003 },
+        ];
+
+        // =====================================================
+        // HELPERS
+        // =====================================================
+        const typeConfig = {
+            slam: { color: '#FF1616', emoji: '🎤', label: 'Slam' },
+            open_mic: { color: '#8B5CF6', emoji: '🎙️', label: 'Open Mic' },
+            reading: { color: '#3B82F6', emoji: '📖', label: 'Reading' },
+            workshop: { color: '#10B981', emoji: '✍️', label: 'Workshop' },
+            festival: { color: '#F59E0B', emoji: '🎉', label: 'Festival' }
+        };
+
+        function formatDate(d) {
+            return new Date(d + 'T00:00:00').toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'});
+        }
+
+        function getCityEventCount(cityName) {
+            return events.filter(e => e.city === cityName || (cityName === 'New York' && e.city === 'Brooklyn')).length;
+        }
+
+        // =====================================================
+        // RENDER CITY GRID
+        // =====================================================
+        function renderCityGrid(region = 'all') {
+            const grid = document.getElementById('city-grid');
+            const filteredCities = region === 'all' ? cities : cities.filter(c => c.region === region);
+
+            grid.innerHTML = filteredCities.map(city => {
+                const count = getCityEventCount(city.name);
+                return `
+                    <button onclick="showCityOnMap('${city.name}')" class="city-card bg-dark-700 rounded-xl p-4 text-left transition hover:bg-dark-600">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 bg-accent/20 rounded-lg flex items-center justify-center">
+                                <span class="text-accent text-lg">📍</span>
+                            </div>
+                            <div>
+                                <div class="font-medium">${city.name}</div>
+                                <div class="text-sm text-gray-500">${count} Events</div>
+                            </div>
+                        </div>
+                    </button>
+                `;
+            }).join('');
+        }
+
+        // =====================================================
+        // RENDER DISCOVER EVENTS
+        // =====================================================
+        function renderDiscoverEvents(filteredEvents = events) {
+            const container = document.getElementById('discover-events');
+            const sorted = [...filteredEvents].sort((a, b) => new Date(a.date) - new Date(b.date)).slice(0, 9);
+
+            container.innerHTML = sorted.map(e => {
+                const cfg = typeConfig[e.type];
+                return `
+                    <div onclick="showEventOnMap(${e.id})" class="bg-dark-700 rounded-xl p-4 cursor-pointer hover:bg-dark-600 transition">
+                        <div class="flex items-start justify-between mb-3">
+                            <span class="px-2 py-1 rounded text-xs font-medium" style="background:${cfg.color}20; color:${cfg.color}">${cfg.emoji} ${cfg.label}</span>
+                            <span class="text-sm ${e.price === 'Free' ? 'text-green-400' : 'text-gray-400'}">${e.price}</span>
+                        </div>
+                        <h3 class="font-semibold mb-2 leading-tight">${e.name}</h3>
+                        <p class="text-sm text-gray-400 mb-1">${formatDate(e.date)} • ${e.time}</p>
+                        <p class="text-sm text-gray-500">${e.city}, ${e.state}</p>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // =====================================================
+        // UPDATE CATEGORY COUNTS
+        // =====================================================
+        function updateCategoryCounts() {
+            ['slam', 'open_mic', 'reading', 'workshop', 'festival'].forEach(type => {
+                const count = events.filter(e => e.type === type).length;
+                document.getElementById(`count-${type}`).textContent = `${count} Events`;
+            });
+        }
+
+        // =====================================================
+        // MAP FUNCTIONALITY
+        // =====================================================
+        let map;
+        let markers = {};
+
+        function initMap() {
+            map = L.map('map').setView([39.8283, -98.5795], 4);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap'
+            }).addTo(map);
+            createMarkers(events);
+            renderEventList(events);
+        }
+
+        function createMarkers(filtered) {
+            Object.values(markers).forEach(m => map.removeLayer(m));
+            Object.keys(markers).forEach(k => delete markers[k]);
+
+            filtered.forEach(e => {
+                const cfg = typeConfig[e.type];
+                const icon = L.divIcon({
+                    className: 'x',
+                    html: `<div style="background:${cfg.color};width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.4);cursor:pointer">${cfg.emoji}</div>`,
+                    iconSize: [28,28], iconAnchor: [14,14]
+                });
+                const m = L.marker([e.lat, e.lng], {icon}).addTo(map).bindPopup(`
+                    <div style="min-width:200px;color:#fff">
+                        <div style="font-weight:600;margin-bottom:8px">${e.name}</div>
+                        <div style="font-size:13px;color:#aaa;margin:4px 0">📍 ${e.venue}</div>
+                        <div style="font-size:13px;color:#aaa;margin:4px 0">📅 ${formatDate(e.date)} ${e.time}</div>
+                        <div style="font-size:12px;color:#888;margin:4px 0">📌 ${e.city}, ${e.state}</div>
+                        <div style="margin-top:10px">
+                            <span style="background:${cfg.color};color:white;padding:3px 10px;border-radius:10px;font-size:11px">${cfg.emoji} ${cfg.label}</span>
+                            <span style="margin-left:8px;color:${e.price==='Free'?'#4ade80':'#aaa'}">${e.price}</span>
+                        </div>
+                    </div>
+                `);
+                m.on('click', () => highlightEvent(e.id));
+                markers[e.id] = m;
+            });
+        }
+
+        function renderEventList(filtered) {
+            const c = document.getElementById('event-list');
+            if (!filtered.length) { c.innerHTML = '<p class="text-gray-500 text-center py-8">No events found</p>'; return; }
+
+            c.innerHTML = filtered.map(e => {
+                const cfg = typeConfig[e.type];
+                return `
+                    <div onclick="highlightEvent(${e.id})" data-event-id="${e.id}" class="event-card bg-dark-700 rounded-xl p-4 cursor-pointer border-2 border-transparent transition">
+                        <div class="flex justify-between mb-2">
+                            <span class="px-2 py-1 rounded text-xs" style="background:${cfg.color}20;color:${cfg.color}">${cfg.emoji} ${cfg.label}</span>
+                            <span class="text-sm ${e.price==='Free'?'text-green-400':'text-gray-400'}">${e.price}</span>
+                        </div>
+                        <h3 class="font-semibold text-sm mb-2 leading-tight">${e.name}</h3>
+                        <p class="text-xs text-gray-400">📅 ${formatDate(e.date)} ${e.time}</p>
+                        <p class="text-xs text-gray-500">📍 ${e.venue}</p>
+                        <p class="text-xs text-gray-600 mt-1">${e.city}, ${e.state}</p>
+                    </div>
+                `;
+            }).join('');
+
+            document.getElementById('filtered-count').textContent = `${filtered.length} events`;
+        }
+
+        function highlightEvent(id) {
+            document.querySelectorAll('.event-card').forEach(c => c.classList.remove('active'));
+            const e = events.find(x => x.id === id);
+            if (!e) return;
+            const card = document.querySelector(`[data-event-id="${id}"]`);
+            if (card) { card.classList.add('active'); card.scrollIntoView({behavior:'smooth',block:'nearest'}); }
+            const m = markers[id];
+            if (m) { map.setView([e.lat, e.lng], 12, {animate:true}); setTimeout(() => m.openPopup(), 300); }
+        }
+
+        function filterByType(type) {
+            const filtered = type === 'all' ? events : events.filter(e => e.type === type);
+            createMarkers(filtered);
+            renderEventList(filtered);
+            document.getElementById('stat-events').textContent = filtered.length;
+        }
+
+        // =====================================================
+        // NAVIGATION BETWEEN VIEWS
+        // =====================================================
+        function showView(view) {
+            document.getElementById('discover-view').classList.toggle('hidden', view !== 'discover');
+            document.getElementById('map-view').classList.toggle('hidden', view !== 'map');
+            document.getElementById('nav-discover').classList.toggle('active', view === 'discover');
+            document.getElementById('nav-map').classList.toggle('active', view === 'map');
+
+            if (view === 'map' && !map) {
+                setTimeout(initMap, 100);
+            }
+        }
+
+        function showCityOnMap(cityName) {
+            showView('map');
+            setTimeout(() => {
+                const city = cities.find(c => c.name === cityName);
+                if (city && map) {
+                    map.setView([city.lat, city.lng], 11, {animate: true});
+                }
+            }, 200);
+        }
+
+        function showEventOnMap(id) {
+            showView('map');
+            setTimeout(() => highlightEvent(id), 200);
+        }
+
+        // =====================================================
+        // EVENT LISTENERS
+        // =====================================================
+        document.getElementById('nav-discover').onclick = () => showView('discover');
+        document.getElementById('nav-map').onclick = () => showView('map');
+        document.getElementById('view-all-map').onclick = () => showView('map');
+
+        document.querySelectorAll('.type-btn').forEach(btn => {
+            btn.onclick = () => {
+                document.querySelectorAll('.type-btn').forEach(b => {
+                    b.classList.remove('bg-white', 'text-black');
+                    b.classList.add('bg-dark-600', 'text-gray-300');
+                });
+                btn.classList.remove('bg-dark-600', 'text-gray-300');
+                btn.classList.add('bg-white', 'text-black');
+                filterByType(btn.dataset.type);
+            };
+        });
+
+        document.querySelectorAll('.category-card').forEach(card => {
+            card.onclick = () => {
+                showView('map');
+                setTimeout(() => filterByType(card.dataset.category), 200);
+            };
+        });
+
+        document.querySelectorAll('.region-tab').forEach(tab => {
+            tab.onclick = () => {
+                document.querySelectorAll('.region-tab').forEach(t => t.classList.replace('text-white', 'text-gray-500'));
+                tab.classList.replace('text-gray-500', 'text-white');
+                renderCityGrid(tab.dataset.region);
+            };
+        });
+
+        // =====================================================
+        // LIVE DATA — fetch from Supabase + subscribe to changes
+        // =====================================================
+        async function loadEvents() {
+            const { data, error } = await _sb
+                .from('events')
+                .select('*')
+                .order('date', { ascending: true });
+
+            if (error) {
+                console.error('Supabase fetch error:', error.message);
+                return;
+            }
+
+            // Normalize Supabase column names to match the rest of the code
+            events = (data || []).map(r => ({
+                id:     r.id,
+                name:   r.name,
+                venue:  r.venue,
+                city:   r.city,
+                state:  r.state,
+                region: r.region || 'west',
+                lat:    r.lat,
+                lng:    r.lng,
+                type:   r.type,
+                date:   r.date,
+                time:   r.time,
+                price:  r.price,
+                url:    r.url,
+            }));
+
+            refreshUI();
+        }
+
+        function refreshUI() {
+            renderCityGrid();
+            renderDiscoverEvents();
+            updateCategoryCounts();
+            document.getElementById('stat-events').textContent = events.length;
+            document.getElementById('stat-cities').textContent = [...new Set(events.map(e => e.city))].length;
+            // If map is already open, re-render markers
+            if (map) {
+                Object.values(markers).forEach(m => m.remove());
+                markers = {};
+                createMarkers();
+                renderEventList(events);
+            }
+        }
+
+        // ── Initial load ───────────────────────────────────────
+        loadEvents();
+
+        // ── Real-time subscription: auto-refresh on any DB change ──
+        _sb
+            .channel('events-live')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, () => {
+                console.log('Live update received — refreshing events…');
+                loadEvents();
+            })
+            .subscribe();
+
+    </script>
+</body>
+</html>
