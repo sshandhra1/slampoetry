@@ -2,13 +2,13 @@ name: Scrape Poetry Events
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # every 30 minutes, 24/7
-  workflow_dispatch:          # also allows manual trigger from GitHub UI
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
 
 jobs:
   scrape:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repo
@@ -24,11 +24,9 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r scraper/requirements.txt
 
-      - name: Install Playwright browsers
-        run: playwright install --with-deps chromium
-
       - name: Run scraper
         run: python scraper/collect_events.py
         env:
           SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          EVENTBRITE_TOKEN:     ${{ secrets.EVENTBRITE_TOKEN }}
