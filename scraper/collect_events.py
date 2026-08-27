@@ -447,9 +447,11 @@ def fetch_citylights_events() -> list[dict]:
     events = []
     seen_urls: set[str] = set()
 
-    # Pattern: <h2> or <h3> containing a link whose href is /events/<slug>/
+    # Pattern: <h2> or <h3> containing a link to /events/<slug>/
+    # Handles both absolute (https://citylights.com/events/slug/) and
+    # relative (/events/slug/) hrefs — WordPress can produce either.
     heading_re = re.compile(
-        r'<h[23][^>]*>\s*<a[^>]+href="(https://citylights\.com/events/[^"/]+/?)"[^>]*>'
+        r'<h[23][^>]*>\s*<a[^>]+href="((?:https://citylights\.com)?/events/[^"/]+/?)"[^>]*>'
         r'(.*?)</a>\s*</h[23]>',
         re.IGNORECASE | re.DOTALL,
     )
@@ -464,7 +466,9 @@ def fetch_citylights_events() -> list[dict]:
     )
 
     for m in heading_re.finditer(raw):
-        url   = m.group(1).rstrip("/") + "/"
+        raw_href = m.group(1)
+        url = ("https://citylights.com" + raw_href if raw_href.startswith("/")
+               else raw_href).rstrip("/") + "/"
         title = _html.unescape(re.sub(r'<[^>]+>', '', m.group(2))).strip()
 
         if not title or url in seen_urls:
