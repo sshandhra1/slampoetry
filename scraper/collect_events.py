@@ -421,17 +421,33 @@ def fetch_birdbeckett_events() -> list[dict]:
 def fetch_citylights_events() -> list[dict]:
     """Scrape City Lights events page and return poetry-related events.
 
-    City Lights uses a plain WordPress event template (NOT Tribe Events).
-    Each event has an <h2> or <h3> containing a link to /events/<slug>/.
-    The date string ("Wednesday, September 16, 2026, 7:00 pm PST") appears
-    in the HTML immediately before the heading. We search backward from each
-    heading to find the nearest date, then forward for the description.
+    HTML structure (confirmed via DevTools Aug 2026):
+      <div class="list-item-block">
+        <div class="left-block">
+          <a href="url"><img ...></a>          ← image (can be 300+ chars)
+        </div>
+        <div class="content-block">
+          <p class="shortcode-date"            ← date paragraph with Unix timestamp
+             data-test2="1787797800">          ← epoch seconds of event start
+            Wednesday, August 26, 2026, 6:00 pm PST
+          </p>
+          <!-- date section end-->
+          <h3 class="shortcode-title list-heading">
+            <a href="https://citylights.com/events/slug/">Title</a>
+          </h3>
+          <p>Description...</p>
+        </div>
+        <div class="right-side">VIRTUAL EVENT</div>
+      </div>
 
-    Poetry gate: POETRY_KW must appear in title OR description (case-insensitive).
-    Past events are skipped via the "(Event Passed)" marker City Lights adds.
+    Key findings:
+    - "Event Passed" text is injected by JavaScript — NOT in the raw HTML.
+      Use the data-test2 Unix timestamp to check if event is in the future.
+    - The image HTML before the date can exceed 500 chars, so searching
+      backward from the heading by char count is unreliable.
+    - Solution: parse each list-item-block container independently.
     """
     import html as _html
-    from dateutil import parser as dateparser
 
     try:
         resp = requests.get("https://citylights.com/events/", timeout=30,
@@ -441,86 +457,75 @@ def fetch_citylights_events() -> list[dict]:
         log.error("City Lights fetch failed: %s", e)
         return []
 
-    raw = resp.text
-    # DEBUG — log first 300 chars and heading/date match counts so we can
-    # see what the live page actually returns. Remove after confirming.
-    log.info("City Lights: fetched %d bytes, status %s", len(raw), resp.status_code)
-    log.info("City Lights HTML snippet: %s", raw[:300].replace('\n', ' '))
-
-    today = date.today()
-    end   = today + timedelta(days=DAYS_AHEAD)
-    events = []
+    raw  = resp.text
+    now_ts  = datetime.now(tz=PACIFIC).timestamp()
+    end_ts  = now_ts + DAYS_AHEAD * 86400
+    today   = date.today()
+    events  = []
     seen_urls: set[str] = set()
 
-    # Pattern: <h2> or <h3> containing a link to /events/<slug>/
-    # Handles both absolute (https://citylights.com/events/slug/) and
-    # relative (/events/slug/) hrefs — WordPress can produce either.
-    heading_re = re.compile(
-        r'<h[23][^>]*>\s*<a[^>]+href="((?:https://citylights\.com)?/events/[^"/]+/?)"[^>]*>'
-        r'(.*?)</a>\s*</h[23]>',
+    # Each event lives in a div.list-item-block
+    block_re = re.compile(
+        r'<div[^>]+class="[^"]*list-item-block[^"]*"[^>]*>(.*?)</div>\s*</div>',
         re.IGNORECASE | re.DOTALL,
     )
 
-    # Full date string as City Lights writes it
-    date_re = re.compile(
-        r'(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s+'
-        r'(?:January|February|March|April|May|June|July|August|'
-        r'September|October|November|December)\s+\d{1,2},\s+\d{4},'
-        r'\s+\d{1,2}:\d{2}\s+(?:am|pm)\s+PST',
-        re.IGNORECASE,
+    # data-test2 holds the Unix epoch of the event start (confirmed from DevTools)
+    ts_re = re.compile(r'data-test2="(\d+)"', re.IGNORECASE)
+
+    # Time display from the visible date text (e.g. "6:00 pm")
+    time_re = re.compile(r'(\d{1,2}:\d{2}\s*(?:am|pm))', re.IGNORECASE)
+
+    # Heading with event link
+    heading_re = re.compile(
+        r'<h[23][^>]*>\s*<a[^>]+href="([^"]*(?:https://citylights\.com)?/events/[^"/]+/?)"[^>]*>'
+        r'(.*?)</a>',
+        re.IGNORECASE | re.DOTALL,
     )
 
-    all_headings = list(heading_re.finditer(raw))
-    all_dates    = list(date_re.finditer(raw))
-    log.info("City Lights: %d heading matches, %d date matches in raw HTML",
-             len(all_headings), len(all_dates))
+    log.info("City Lights: fetched %d bytes", len(raw))
+    blocks = list(block_re.finditer(raw))
+    log.info("City Lights: found %d list-item-block containers", len(blocks))
 
-    for m in all_headings:
-        raw_href = m.group(1)
+    for blk in blocks:
+        block_html = blk.group(1)
+
+        # ── Timestamp / date ────────────────────────────────────────────────
+        ts_m = ts_re.search(block_html)
+        if not ts_m:
+            continue
+        event_ts = int(ts_m.group(1))
+
+        # Skip past events and events beyond the scrape window
+        if not (now_ts <= event_ts <= end_ts):
+            continue
+
+        event_date = datetime.fromtimestamp(event_ts, tz=PACIFIC).date()
+
+        # ── Heading / URL ────────────────────────────────────────────────────
+        h_m = heading_re.search(block_html)
+        if not h_m:
+            continue
+        raw_href = h_m.group(1)
         url = ("https://citylights.com" + raw_href if raw_href.startswith("/")
                else raw_href).rstrip("/") + "/"
-        title = _html.unescape(re.sub(r'<[^>]+>', '', m.group(2))).strip()
+        title = _html.unescape(re.sub(r'<[^>]+>', '', h_m.group(2))).strip()
 
         if not title or url in seen_urls:
             continue
 
-        # Skip events City Lights has already marked as passed
-        # 500-char window for date lookup (date paragraph precedes heading)
-        pre_block  = raw[max(0, m.start() - 500): m.start()]
-        # 150-char tight window for "Event Passed" — City Lights places it immediately
-        # adjacent to its own heading; a wider window would bleed into the next event.
-        tight_pre  = raw[max(0, m.start() - 150): m.start()]
-        if "Event Passed" in tight_pre:
-            continue
+        # ── Description (everything after the heading in the block) ──────────
+        desc_html = block_html[h_m.end():]
+        desc = re.sub(r'<[^>]+>', ' ', desc_html).strip()[:250]
 
-        # Find the nearest date string that appears before this heading
-        date_matches = list(date_re.finditer(pre_block))
-        if not date_matches:
-            continue
-        date_str = date_matches[-1].group()
-
-        try:
-            event_date = dateparser.parse(date_str).date()
-        except Exception:
-            continue
-
-        if not (today <= event_date <= end):
-            continue
-
-        # Description: truncate at next <h2>/<h3> to prevent cross-event bleed
-        post_raw = raw[m.end(): m.end() + 500]
-        nh_m     = re.search(r'<h[23]', post_raw, re.IGNORECASE)
-        post_raw = post_raw[:nh_m.start()] if nh_m else post_raw[:400]
-        desc     = re.sub(r'<[^>]+>', ' ', post_raw).strip()[:250]
-
-        # Poetry gate: keyword must appear in title OR description
+        # ── Poetry gate ──────────────────────────────────────────────────────
         combined = (title + " " + desc).lower()
         if not any(kw in combined for kw in POETRY_KW):
             continue
 
-        # Extract time from date string
-        time_m = re.search(r'(\d{1,2}:\d{2}\s*(?:am|pm))', date_str, re.I)
-        evt_time = time_m.group(1).strip().upper() if time_m else "7:00 PM"
+        # ── Time ─────────────────────────────────────────────────────────────
+        time_m2 = time_re.search(block_html)
+        evt_time = time_m2.group(1).strip().upper() if time_m2 else "7:00 PM"
 
         seen_urls.add(url)
         slug   = re.sub(r"[^a-z0-9]", "", title.lower())[:30]
