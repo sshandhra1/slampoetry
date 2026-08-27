@@ -1,7 +1,7 @@
 name: Scrape Poetry Events
 on:
   schedule:
-    - cron: "0 8 * * *"   # 8 AM UTC daily
+    - cron: "0 8 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -12,7 +12,7 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +24,9 @@ jobs:
           cache-dependency-path: scraper/requirements.txt
 
       - run: pip install -r scraper/requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
 
       - name: Run scraper
         run: |
