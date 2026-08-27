@@ -419,113 +419,108 @@ def fetch_birdbeckett_events() -> list[dict]:
 
 
 def fetch_citylights_events() -> list[dict]:
-    """Scrape City Lights events page and return poetry-related events.
+    """Scrape City Lights events using Playwright (headless Chromium).
+
+    Plain requests.get() is blocked by Cloudflare on GitHub Actions IPs.
+    Playwright runs a real Chromium browser, executes the JS challenge, and
+    lets us use the same JS extraction snippet that works in Chrome DevTools.
 
     HTML structure (confirmed via DevTools Aug 2026):
       <div class="list-item-block">
-        <div class="left-block">
-          <a href="url"><img ...></a>          ← image (can be 300+ chars)
-        </div>
         <div class="content-block">
-          <p class="shortcode-date"            ← date paragraph with Unix timestamp
-             data-test2="1787797800">          ← epoch seconds of event start
+          <p class="shortcode-date" data-test2="1787797800">  ← Unix epoch
             Wednesday, August 26, 2026, 6:00 pm PST
           </p>
-          <!-- date section end-->
           <h3 class="shortcode-title list-heading">
             <a href="https://citylights.com/events/slug/">Title</a>
           </h3>
-          <p>Description...</p>
+          <p>Description text...</p>
         </div>
-        <div class="right-side">VIRTUAL EVENT</div>
       </div>
 
-    Key findings:
-    - "Event Passed" text is injected by JavaScript — NOT in the raw HTML.
-      Use the data-test2 Unix timestamp to check if event is in the future.
-    - The image HTML before the date can exceed 500 chars, so searching
-      backward from the heading by char count is unreliable.
-    - Solution: parse each list-item-block container independently.
+    Key: data-test2 is the Unix epoch of event start.
+    "Event Passed" is JS-injected — we compare timestamps instead.
     """
-    import html as _html
-
     try:
-        resp = requests.get("https://citylights.com/events/", timeout=30,
-                            headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
-    except Exception as e:
-        log.error("City Lights fetch failed: %s", e)
+        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+    except ImportError:
+        log.error("playwright not installed — skipping City Lights (pip install playwright)")
         return []
 
-    raw  = resp.text
-    now_ts  = datetime.now(tz=PACIFIC).timestamp()
-    end_ts  = now_ts + DAYS_AHEAD * 86400
-    today   = date.today()
-    events  = []
-    seen_urls: set[str] = set()
-
-    # Each event lives in a div.list-item-block
-    block_re = re.compile(
-        r'<div[^>]+class="[^"]*list-item-block[^"]*"[^>]*>(.*?)</div>\s*</div>',
-        re.IGNORECASE | re.DOTALL,
-    )
-
-    # data-test2 holds the Unix epoch of the event start (confirmed from DevTools)
-    ts_re = re.compile(r'data-test2="(\d+)"', re.IGNORECASE)
-
-    # Time display from the visible date text (e.g. "6:00 pm")
+    now_ts = datetime.now(tz=PACIFIC).timestamp()
+    end_ts = now_ts + DAYS_AHEAD * 86400
+    events: list[dict] = []
     time_re = re.compile(r'(\d{1,2}:\d{2}\s*(?:am|pm))', re.IGNORECASE)
 
-    # Heading with event link
-    heading_re = re.compile(
-        r'<h[23][^>]*>\s*<a[^>]+href="([^"]*(?:https://citylights\.com)?/events/[^"/]+/?)"[^>]*>'
-        r'(.*?)</a>',
-        re.IGNORECASE | re.DOTALL,
-    )
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox"],
+            )
+            page = browser.new_page(user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/126.0.0.0 Safari/537.36"
+            ))
+            page.goto("https://citylights.com/events/", timeout=45_000,
+                      wait_until="domcontentloaded")
+            try:
+                page.wait_for_selector(".list-item-block", timeout=15_000)
+            except PWTimeout:
+                log.error("City Lights: timed out waiting for .list-item-block")
+                browser.close()
+                return []
 
-    log.info("City Lights: fetched %d bytes", len(raw))
-    blocks = list(block_re.finditer(raw))
-    log.info("City Lights: found %d list-item-block containers", len(blocks))
+            raw_items = page.evaluate("""
+                () => Array.from(document.querySelectorAll('.list-item-block')).map(el => {
+                    const titleEl = el.querySelector('.list-heading a');
+                    const dateEl  = el.querySelector('.shortcode-date');
+                    // grab first non-date paragraph as description
+                    const allPs   = el.querySelectorAll('.content-block p');
+                    let desc = '';
+                    for (const p of allPs) {
+                        if (!p.classList.contains('shortcode-date')) {
+                            desc = p.innerText.trim().slice(0, 250);
+                            break;
+                        }
+                    }
+                    return {
+                        title:    titleEl ? titleEl.innerText.trim() : '',
+                        link:     titleEl ? titleEl.href : '',
+                        ts:       dateEl  ? parseInt(dateEl.dataset.test2 || '0', 10) : 0,
+                        dateText: dateEl  ? dateEl.innerText.trim() : '',
+                        desc:     desc,
+                    };
+                })
+            """)
+            browser.close()
+    except Exception as e:
+        log.error("City Lights Playwright error: %s", e)
+        return []
 
-    for blk in blocks:
-        block_html = blk.group(1)
+    log.info("City Lights: got %d raw items from browser", len(raw_items))
 
-        # ── Timestamp / date ────────────────────────────────────────────────
-        ts_m = ts_re.search(block_html)
-        if not ts_m:
+    seen_urls: set[str] = set()
+    for item in raw_items:
+        event_ts = item.get("ts", 0)
+        if not event_ts or not (now_ts <= event_ts <= end_ts):
             continue
-        event_ts = int(ts_m.group(1))
 
-        # Skip past events and events beyond the scrape window
-        if not (now_ts <= event_ts <= end_ts):
+        title = item.get("title", "").strip()
+        url   = item.get("link", "").rstrip("/") + "/"
+        if not title or not url or url in seen_urls:
             continue
 
-        event_date = datetime.fromtimestamp(event_ts, tz=PACIFIC).date()
-
-        # ── Heading / URL ────────────────────────────────────────────────────
-        h_m = heading_re.search(block_html)
-        if not h_m:
-            continue
-        raw_href = h_m.group(1)
-        url = ("https://citylights.com" + raw_href if raw_href.startswith("/")
-               else raw_href).rstrip("/") + "/"
-        title = _html.unescape(re.sub(r'<[^>]+>', '', h_m.group(2))).strip()
-
-        if not title or url in seen_urls:
-            continue
-
-        # ── Description (everything after the heading in the block) ──────────
-        desc_html = block_html[h_m.end():]
-        desc = re.sub(r'<[^>]+>', ' ', desc_html).strip()[:250]
-
-        # ── Poetry gate ──────────────────────────────────────────────────────
+        desc = item.get("desc", "")
         combined = (title + " " + desc).lower()
         if not any(kw in combined for kw in POETRY_KW):
             continue
 
-        # ── Time ─────────────────────────────────────────────────────────────
-        time_m2 = time_re.search(block_html)
-        evt_time = time_m2.group(1).strip().upper() if time_m2 else "7:00 PM"
+        event_date = datetime.fromtimestamp(event_ts, tz=PACIFIC).date()
+        date_text  = item.get("dateText", "")
+        time_m = time_re.search(date_text)
+        evt_time = time_m.group(1).strip().upper() if time_m else "7:00 PM"
 
         seen_urls.add(url)
         slug   = re.sub(r"[^a-z0-9]", "", title.lower())[:30]
