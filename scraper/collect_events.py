@@ -476,15 +476,16 @@ def fetch_citylights_events() -> list[dict]:
                 () => Array.from(document.querySelectorAll('.list-item-block')).map(el => {
                     const titleEl = el.querySelector('.list-heading a');
                     const dateEl  = el.querySelector('.shortcode-date');
-                    // grab first non-date paragraph as description
+                    // grab ALL non-date paragraphs for description
                     const allPs   = el.querySelectorAll('.content-block p');
-                    let desc = '';
+                    const descParts = [];
                     for (const p of allPs) {
                         if (!p.classList.contains('shortcode-date')) {
-                            desc = p.innerText.trim().slice(0, 250);
-                            break;
+                            const t = p.innerText.trim();
+                            if (t) descParts.push(t);
                         }
                     }
+                    const desc = descParts.join(' ').slice(0, 500);
                     return {
                         title:    titleEl ? titleEl.innerText.trim() : '',
                         link:     titleEl ? titleEl.href : '',
