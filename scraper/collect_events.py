@@ -501,6 +501,26 @@ def fetch_citylights_events() -> list[dict]:
 
     log.info("City Lights: got %d raw items from browser", len(raw_items))
 
+    import time as _time
+
+    def _detail_page_matches(detail_url: str) -> bool:
+        """Fetch a City Lights event detail page and check for poetry keywords.
+
+        Individual event pages are NOT Cloudflare-blocked — plain requests works.
+        Returns True if any POETRY_KW found in the page body text.
+        """
+        try:
+            r = requests.get(detail_url, timeout=15, headers={"User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+            )})
+            r.raise_for_status()
+        except Exception as e:
+            log.warning("City Lights detail fetch failed for %s: %s", detail_url, e)
+            return False
+        body = r.text.lower()
+        return any(kw in body for kw in POETRY_KW)
+
     seen_urls: set[str] = set()
     for item in raw_items:
         event_ts = item.get("ts", 0)
@@ -515,7 +535,12 @@ def fetch_citylights_events() -> list[dict]:
         desc = item.get("desc", "")
         combined = (title + " " + desc).lower()
         if not any(kw in combined for kw in POETRY_KW):
-            continue
+            # Listing page text didn't match — check the full detail page.
+            # Individual event pages are accessible without Cloudflare blocking.
+            _time.sleep(0.5)   # be polite
+            if not _detail_page_matches(url):
+                continue
+            log.info("City Lights: detail-page match for '%s'", title)
 
         event_date = datetime.fromtimestamp(event_ts, tz=PACIFIC).date()
         date_text  = item.get("dateText", "")
