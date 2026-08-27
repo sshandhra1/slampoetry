@@ -442,6 +442,11 @@ def fetch_citylights_events() -> list[dict]:
         return []
 
     raw = resp.text
+    # DEBUG — log first 300 chars and heading/date match counts so we can
+    # see what the live page actually returns. Remove after confirming.
+    log.info("City Lights: fetched %d bytes, status %s", len(raw), resp.status_code)
+    log.info("City Lights HTML snippet: %s", raw[:300].replace('\n', ' '))
+
     today = date.today()
     end   = today + timedelta(days=DAYS_AHEAD)
     events = []
@@ -465,7 +470,12 @@ def fetch_citylights_events() -> list[dict]:
         re.IGNORECASE,
     )
 
-    for m in heading_re.finditer(raw):
+    all_headings = list(heading_re.finditer(raw))
+    all_dates    = list(date_re.finditer(raw))
+    log.info("City Lights: %d heading matches, %d date matches in raw HTML",
+             len(all_headings), len(all_dates))
+
+    for m in all_headings:
         raw_href = m.group(1)
         url = ("https://citylights.com" + raw_href if raw_href.startswith("/")
                else raw_href).rstrip("/") + "/"
