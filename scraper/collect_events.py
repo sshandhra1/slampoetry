@@ -548,79 +548,137 @@ def fetch_citylights_events() -> list[dict]:
 
 
 def fetch_poetryflash_events() -> list[dict]:
-    """Scrape Poetry Flash calendar and return upcoming reading events."""
-    try:
-        resp = requests.get("https://poetryflash.org/calendar/", timeout=30,
-                            headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
-    except Exception as e:
-        log.error("Poetry Flash fetch failed: %s", e)
-        return []
+    """Scrape Poetry Flash calendar for Bay Area poetry events.
 
-    # Poetry Flash events are all poetry — filter for Bay Area only
-    bay_area_cities = ["san francisco", "berkeley", "oakland", "alameda",
-                       "marin", "mill valley", "san rafael", "richmond",
-                       "emeryville", "el cerrito", "albany"]
-    text = resp.text
-    text_lower = text.lower()
+    Page structure (confirmed Aug 2026):
+      - Date headers: <p> tags matching "DD MONTH YYYY — weekday"
+      - Events: subsequent <p>/<li> tags, ending with an "EVENT PAGE" link
+      - All date headers and events share a common parent container
 
-    if not any(city in text_lower for city in bay_area_cities):
-        log.info("Poetry Flash: no Bay Area events found")
-        return []
+    Fetches current month + follows "next month >" link to cover 90-day window.
+    """
+    from bs4 import BeautifulSoup
+    from dateutil import parser as dateparser
 
-    # Basic extraction — Poetry Flash uses a simple table/list layout
-    import re as _re
+    BAY_AREA_CITIES = [
+        "san francisco", "berkeley", "oakland", "alameda",
+        "mill valley", "san rafael", "richmond", "emeryville",
+        "el cerrito", "albany", "palo alto", "petaluma",
+        "sausalito", "tiburon", "fairfax", "san anselmo", "novato",
+    ]
+
     today = date.today()
     end   = today + timedelta(days=DAYS_AHEAD)
-    events = []
 
-    # Match date patterns like "August 22" or "8/22"
-    date_pattern = _re.compile(
-        r'(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}',
-        re.IGNORECASE
-    )
-    for match in date_pattern.finditer(text):
+    date_re = re.compile(r'^(\d{1,2})\s+([A-Z]+)\s+(\d{4})', re.IGNORECASE)
+    time_re = re.compile(r'(\d{1,2}:\d{2}\s*(?:am|pm))', re.IGNORECASE)
+
+    events:    list[dict] = []
+    seen_ids:  set[str]   = set()
+    fetched:   set[str]   = set()
+    queue = ["https://poetryflash.org/calendar/"]
+    months_fetched = 0
+
+    while queue and months_fetched < 4:
+        url = queue.pop(0)
+        if url in fetched:
+            continue
+        fetched.add(url)
+        months_fetched += 1
+
         try:
-            from dateutil import parser as dateparser
-            event_date = dateparser.parse(match.group()).date()
-            # Assume current year; push to next year if past
-            if event_date < today:
-                event_date = event_date.replace(year=event_date.year + 1)
-        except Exception:
+            resp = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+        except Exception as e:
+            log.error("Poetry Flash fetch failed for %s: %s", url, e)
             continue
-        if not (today <= event_date <= end):
-            continue
-        # Grab surrounding context (200 chars)
-        ctx_start = max(0, match.start() - 50)
-        ctx_end   = min(len(text), match.end() + 200)
-        ctx = text[ctx_start:ctx_end]
-        # Only keep if Bay Area city mentioned nearby
-        if not any(city in ctx.lower() for city in bay_area_cities):
-            continue
-        # Strip HTML tags for name
-        name = _re.sub(r"<[^>]+>", " ", ctx).strip()[:80].split("\n")[0].strip()
-        if not name:
-            name = "Poetry Flash Reading"
-        slug   = re.sub(r"[^a-z0-9]", "", name.lower())[:30]
-        ext_id = f"poetryflash-{slug}-{event_date.strftime('%Y%m%d')}"
-        if any(e["external_id"] == ext_id for e in events):
-            continue
-        events.append({
-            "external_id": ext_id,
-            "name":        name,
-            "venue":       "Art House Gallery & Cultural Center",
-            "city":        "Berkeley",
-            "state":       "CA",
-            "region":      "west",
-            "lat":         37.8574,
-            "lng":        -122.2596,
-            "type":        "reading",
-            "date":        event_date.strftime("%Y-%m-%d"),
-            "time":        "3:00 PM",
-            "price":       "Free",
-            "url":         "https://poetryflash.org/calendar/",
-            "source":      "poetryflash",
-        })
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Queue the next month's page if within our window
+        next_link = soup.find("a", string=re.compile(r"next month", re.IGNORECASE))
+        if next_link and next_link.get("href"):
+            next_url = next_link["href"]
+            if not next_url.startswith("http"):
+                next_url = "https://poetryflash.org" + next_url
+            if next_url not in fetched:
+                queue.append(next_url)
+
+        # Walk all <p> and <li> elements in document order
+        current_date = None
+        for el in soup.find_all(["p", "li"]):
+            text = el.get_text(" ", strip=True)
+            if not text:
+                continue
+
+            # Date header?
+            dm = date_re.match(text)
+            if dm:
+                try:
+                    current_date = dateparser.parse(
+                        f"{dm.group(1)} {dm.group(2).capitalize()} {dm.group(3)}"
+                    ).date()
+                except Exception:
+                    current_date = None
+                continue
+
+            if current_date is None or not (today <= current_date <= end):
+                continue
+
+            text_lower = text.lower()
+
+            # Bay Area filter
+            if not any(city in text_lower for city in BAY_AREA_CITIES):
+                continue
+
+            # Poetry keyword filter
+            if not any(kw in text_lower for kw in POETRY_KW):
+                continue
+
+            # Event URL — prefer the EVENT PAGE anchor
+            event_url = "https://poetryflash.org/calendar/"
+            ep_link = el.find("a", string=re.compile(r"EVENT PAGE", re.IGNORECASE))
+            if ep_link and ep_link.get("href"):
+                event_url = ep_link["href"]
+
+            # Time
+            time_m = time_re.search(text)
+            evt_time = time_m.group(1).strip().upper() if time_m else "7:00 PM"
+
+            # Name — strip "EVENT PAGE" suffix, trim to 100 chars
+            name = re.sub(r"\s+", " ", text.split("EVENT PAGE")[0]).strip()[:100]
+            if not name:
+                name = "Poetry Flash Event"
+
+            # City
+            event_city = "San Francisco"
+            for city in BAY_AREA_CITIES:
+                if city in text_lower:
+                    event_city = city.title()
+                    break
+
+            slug   = re.sub(r"[^a-z0-9]", "", name.lower())[:30]
+            ext_id = f"poetryflash-{slug}-{current_date.strftime('%Y%m%d')}"
+            if ext_id in seen_ids:
+                continue
+            seen_ids.add(ext_id)
+
+            events.append({
+                "external_id": ext_id,
+                "name":        name,
+                "venue":       "Various Venues",
+                "city":        event_city,
+                "state":       "CA",
+                "region":      "west",
+                "lat":         37.7749,
+                "lng":        -122.4194,
+                "type":        "reading",
+                "date":        current_date.strftime("%Y-%m-%d"),
+                "time":        evt_time,
+                "price":       "Free",
+                "url":         event_url,
+                "source":      "poetryflash",
+            })
 
     log.info("Found %d Poetry Flash Bay Area events", len(events))
     return events
