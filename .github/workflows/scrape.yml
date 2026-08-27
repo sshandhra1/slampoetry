@@ -1,9 +1,13 @@
 name: Scrape Poetry Events
-
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "0 8 * * *"   # 8 AM UTC daily
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (print events, skip DB writes)"
+        type: boolean
+        default: false
 
 jobs:
   scrape:
@@ -11,22 +15,23 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
           cache-dependency-path: scraper/requirements.txt
 
-      - name: Install Python dependencies
-        run: pip install -r scraper/requirements.txt
+      - run: pip install -r scraper/requirements.txt
 
       - name: Run scraper
-        run: python scraper/collect_events.py
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            python scraper/collect_events.py --dry-run
+          else
+            python scraper/collect_events.py
+          fi
         env:
           SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          SCRAPER_API_KEY:      ${{ secrets.SCRAPER_API_KEY }}
