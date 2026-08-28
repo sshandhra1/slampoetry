@@ -483,9 +483,11 @@
         // LIVE DATA — fetch from Supabase + subscribe to changes
         // =====================================================
         async function loadEvents() {
+            const BATCH1_SOURCES = ['recurring', 'birdbeckett', 'citylights', 'poetryflash', 'youthspeaks'];
             const { data, error } = await _sb
                 .from('events')
                 .select('*')
+                .in('source', BATCH1_SOURCES)
                 .order('date', { ascending: true });
 
             if (error) {
