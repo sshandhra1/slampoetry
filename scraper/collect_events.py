@@ -501,6 +501,12 @@ def fetch_citylights_events() -> list[dict]:
 
     log.info("City Lights: got %d raw items from browser", len(raw_items))
 
+    # DEBUG — print all raw items in dry-run so we can inspect ts/link values
+    if DRY_RUN:
+        for i, item in enumerate(raw_items):
+            log.info("  [%02d] ts=%-12s  title=%s", i, item.get("ts", "?"), item.get("title", "")[:60])
+            log.info("       link=%s", item.get("link", ""))
+
     import time as _time
 
     def _detail_page_matches(detail_url: str) -> bool:
