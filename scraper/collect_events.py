@@ -735,75 +735,150 @@ def fetch_poetryflash_events() -> list[dict]:
 
 
 def fetch_youthspeaks_events() -> list[dict]:
-    """Scrape Youth Speaks events page for their annual slam season (semifinals + finals).
-    Not a fixed recurring schedule — scrape their site to catch exact dates each year.
-    Listed as type='festival' since these are season-culminating competitions, not open mics.
+    """Scrape multiple Youth Speaks sources — we don't assume any single one is complete:
+      1. /calendar/        — monthly calendar (primary, WordPress Events Calendar plugin)
+      2. youthspeaks.org   — homepage upcoming-events section (lighter, faster fallback)
+      3. bravenewvoices.youthspeaks.org — BNV festival landing page (separate site)
+    All sources write to source='youthspeaks'; upsert deduplicates by external_id.
     """
-    try:
-        resp = requests.get("https://youthspeaks.org/events/", timeout=30,
-                            headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
-    except Exception as e:
-        log.error("Youth Speaks fetch failed: %s", e)
-        return []
-
-    text      = resp.text
-    text_low  = text.lower()
-    slam_kws  = ["slam", "semifinal", "final", "spoken word", "poetry"]
-    if not any(kw in text_low for kw in slam_kws):
-        log.info("Youth Speaks: no slam events found")
-        return []
-
-    import re as _re
+    from bs4 import BeautifulSoup
     from dateutil import parser as dateparser
 
-    today = date.today()
-    end   = today + timedelta(days=DAYS_AHEAD)
-    events = []
+    HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+    today      = date.today()
+    end        = today + timedelta(days=DAYS_AHEAD)
+    events: list[dict] = []
+    seen_ids: set[str] = set()
 
-    date_pattern = _re.compile(
-        r'(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}',
-        re.IGNORECASE
+    DATE_RE = re.compile(
+        r'(January|February|March|April|May|June|July|August|September|'
+        r'October|November|December)\s+\d{1,2},?\s+\d{4}', re.IGNORECASE
     )
-    seen = set()
-    for match in date_pattern.finditer(text):
-        try:
-            event_date = dateparser.parse(match.group()).date()
-            if event_date < today:
-                event_date = event_date.replace(year=event_date.year + 1)
-        except Exception:
-            continue
-        if not (today <= event_date <= end) or event_date in seen:
-            continue
-        # Check surrounding context for slam keywords
-        ctx = text[max(0, match.start()-50) : min(len(text), match.end()+300)]
-        ctx_low = ctx.lower()
-        if not any(kw in ctx_low for kw in slam_kws):
-            continue
-        seen.add(event_date)
-        name = _re.sub(r"<[^>]+>", " ", ctx).strip()[:80].split("\n")[0].strip()
-        if not name:
-            name = "Youth Speaks Teen Poetry Slam"
-        slug   = re.sub(r"[^a-z0-9]", "", name.lower())[:30]
-        ext_id = f"youthspeaks-{slug}-{event_date.strftime('%Y%m%d')}"
-        events.append({
-            "external_id": ext_id,
-            "name":        name,
-            "venue":       "Various Venues",
-            "city":        "San Francisco",
-            "state":       "CA",
-            "region":      "west",
-            "lat":         37.7749,
-            "lng":        -122.4194,
-            "type":        "festival",
-            "date":        event_date.strftime("%Y-%m-%d"),
-            "time":        "TBD",
-            "price":       "Free",
-            "url":         "https://youthspeaks.org/events/",
-            "source":      "youthspeaks",
-        })
 
-    log.info("Found %d Youth Speaks events", len(events))
+    def _parse_articles(soup: "BeautifulSoup", fallback_url: str, label: str) -> None:
+        """Extract events from <article> elements (Events Calendar plugin format)."""
+        articles = (
+            soup.find_all("article", class_=lambda c: c and "tribe-event" in " ".join(c))
+            or soup.find_all("article")
+        )
+        log.info("Youth Speaks %s: %d article elements found", label, len(articles))
+        for art in articles:
+            title_el = (
+                art.find(["h2","h3","h4","a"], class_=lambda c: c and "title" in " ".join(c))
+                or art.find(["h2","h3","h4"])
+            )
+            title = title_el.get_text(" ", strip=True) if title_el else ""
+            if not title:
+                continue
+
+            link_el = art.find("a", href=True)
+            url = link_el["href"] if link_el else fallback_url
+
+            # Date: prefer abbr[title] or datetime attr, else regex on text
+            dt_el  = art.find("abbr", title=True) or art.find(attrs={"datetime": True})
+            raw_dt = ""
+            if dt_el:
+                raw_dt = dt_el.get("title") or dt_el.get("datetime") or dt_el.get_text()
+            if not raw_dt:
+                m = DATE_RE.search(art.get_text(" "))
+                raw_dt = m.group() if m else ""
+            if not raw_dt:
+                continue
+            try:
+                event_date = dateparser.parse(raw_dt).date()
+            except Exception:
+                continue
+            if not (today <= event_date <= end):
+                continue
+
+            time_m   = re.search(r'\d{1,2}:\d{2}\s*(?:am|pm)', art.get_text(), re.IGNORECASE)
+            evt_time = time_m.group().upper() if time_m else "TBD"
+            venue_el = art.find(class_=lambda c: c and "venue" in " ".join(c) if c else False)
+            venue    = venue_el.get_text(" ", strip=True) if venue_el else "Youth Speaks"
+
+            slug   = re.sub(r"[^a-z0-9]", "", title.lower())[:30]
+            ext_id = f"youthspeaks-{slug}-{event_date.strftime('%Y%m%d')}"
+            if ext_id in seen_ids:
+                continue
+            seen_ids.add(ext_id)
+            events.append({
+                "external_id": ext_id,
+                "name":        title,
+                "venue":       venue or "Youth Speaks",
+                "city":        "San Francisco",
+                "state":       "CA",
+                "region":      "west",
+                "lat":         37.7749,
+                "lng":        -122.4194,
+                "type":        classify_type(art.get_text(" ")),
+                "date":        event_date.strftime("%Y-%m-%d"),
+                "time":        evt_time,
+                "price":       "Free",
+                "url":         url,
+                "source":      "youthspeaks",
+            })
+
+    # ── Source 1: /calendar/ (primary — monthly, slow) ────────────────────────
+    try:
+        r = requests.get("https://youthspeaks.org/calendar/", timeout=60, headers=HEADERS)
+        r.raise_for_status()
+        _parse_articles(BeautifulSoup(r.text, "html.parser"),
+                        "https://youthspeaks.org/calendar/", "calendar")
+    except Exception as e:
+        log.warning("Youth Speaks /calendar/ failed: %s", e)
+
+    # ── Source 2: homepage (fallback — lighter, faster) ───────────────────────
+    try:
+        r = requests.get("https://youthspeaks.org/", timeout=30, headers=HEADERS)
+        r.raise_for_status()
+        _parse_articles(BeautifulSoup(r.text, "html.parser"),
+                        "https://youthspeaks.org/", "homepage")
+    except Exception as e:
+        log.warning("Youth Speaks homepage failed: %s", e)
+
+    # ── Source 3: Brave New Voices (separate festival site) ───────────────────
+    try:
+        r = requests.get("https://bravenewvoices.youthspeaks.org/", timeout=30, headers=HEADERS)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+        # BNV is a landing page — look for a date range like "JULY 15-18 2026"
+        page_text = soup.get_text(" ")
+        bnv_m = re.search(
+            r'(January|February|March|April|May|June|July|August|September|'
+            r'October|November|December)\s+(\d{1,2})(?:[–\-]\d{1,2})?\s+(\d{4})',
+            page_text, re.IGNORECASE
+        )
+        if bnv_m:
+            raw_start = f"{bnv_m.group(1)} {bnv_m.group(2)} {bnv_m.group(3)}"
+            try:
+                bnv_date = dateparser.parse(raw_start).date()
+                if today <= bnv_date <= end:
+                    ext_id = f"youthspeaks-bnv-{bnv_date.strftime('%Y%m%d')}"
+                    if ext_id not in seen_ids:
+                        seen_ids.add(ext_id)
+                        events.append({
+                            "external_id": ext_id,
+                            "name":        f"Brave New Voices {bnv_date.year}",
+                            "venue":       "Various Venues",
+                            "city":        "San Francisco",
+                            "state":       "CA",
+                            "region":      "west",
+                            "lat":         37.7749,
+                            "lng":        -122.4194,
+                            "type":        "festival",
+                            "date":        bnv_date.strftime("%Y-%m-%d"),
+                            "time":        "TBD",
+                            "price":       "Varies",
+                            "url":         "https://bravenewvoices.youthspeaks.org/",
+                            "source":      "youthspeaks",
+                        })
+                        log.info("Youth Speaks: BNV %d detected for %s", bnv_date.year, bnv_date)
+            except Exception:
+                pass
+    except Exception as e:
+        log.warning("Brave New Voices site failed: %s", e)
+
+    log.info("Found %d Youth Speaks events total (all sources)", len(events))
     return events
 
 
