@@ -822,8 +822,12 @@ def fetch_youthspeaks_events() -> list[dict]:
     try:
         r = requests.get("https://youthspeaks.org/calendar/", timeout=60, headers=HEADERS)
         r.raise_for_status()
-        _parse_articles(BeautifulSoup(r.text, "html.parser"),
-                        "https://youthspeaks.org/calendar/", "calendar")
+        soup_cal = BeautifulSoup(r.text, "html.parser")
+        # Debug: log first 500 chars and element counts to understand page structure
+        log.info("Youth Speaks calendar HTML snippet: %s", r.text[:500].replace('\n', ' '))
+        log.info("Youth Speaks calendar divs: %d, articles: %d, li: %d",
+                 len(soup_cal.find_all("div")), len(soup_cal.find_all("article")), len(soup_cal.find_all("li")))
+        _parse_articles(soup_cal, "https://youthspeaks.org/calendar/", "calendar")
     except Exception as e:
         log.warning("Youth Speaks /calendar/ failed: %s", e)
 
