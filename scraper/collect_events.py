@@ -344,7 +344,7 @@ BIRDBECKETT_ICS = (
 # Applied to: title + description (case-insensitive).
 # Used across Bird & Beckett, City Lights, and library scrapers.
 POETRY_KW = [
-    "poet", "poetry", "poem", "poems",
+    "poet", "poets", "poetry", "poem", "poems",
     "spoken word", "open mic", "slam",
     "verse", "haiku", "lyric", "poet laureate",
     "reading series", "literary reading",
