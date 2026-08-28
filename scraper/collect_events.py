@@ -494,85 +494,69 @@ def fetch_citylights_events() -> list[dict]:
                     };
                 })
             """)
+
+            log.info("City Lights: got %d raw items from browser", len(raw_items))
+
+            # For events that don't match on the listing page, navigate to their
+            # detail page within the SAME Playwright session (already past Cloudflare)
+            # and check the full page text. Plain requests.get() is also Cloudflare-blocked
+            # on GitHub Actions IPs, so we must reuse the authenticated browser.
+            seen_urls: set[str] = set()
+            for item in raw_items:
+                event_ts = item.get("ts", 0)
+                if not event_ts or not (now_ts <= event_ts <= end_ts):
+                    continue
+
+                title = item.get("title", "").strip()
+                url   = item.get("link", "").rstrip("/") + "/"
+                if not title or not url or url in seen_urls:
+                    continue
+
+                desc = item.get("desc", "")
+                combined = (title + " " + desc).lower()
+                if not any(kw in combined for kw in POETRY_KW):
+                    # Listing page text didn't match — load the detail page in the
+                    # existing Playwright browser (reuses Cloudflare session).
+                    try:
+                        page.goto(url, timeout=20_000, wait_until="domcontentloaded")
+                        detail_text = page.inner_text("body").lower()
+                    except Exception as e:
+                        log.warning("City Lights detail page failed for '%s': %s", title, e)
+                        continue
+                    if not any(kw in detail_text for kw in POETRY_KW):
+                        continue
+                    log.info("City Lights: detail-page match for '%s'", title)
+
+                event_date = datetime.fromtimestamp(event_ts, tz=PACIFIC).date()
+                date_text  = item.get("dateText", "")
+                time_m = time_re.search(date_text)
+                evt_time = time_m.group(1).strip().upper() if time_m else "7:00 PM"
+
+                seen_urls.add(url)
+                slug   = re.sub(r"[^a-z0-9]", "", title.lower())[:30]
+                ext_id = f"citylights-{slug}-{event_date.strftime('%Y%m%d')}"
+
+                events.append({
+                    "external_id": ext_id,
+                    "name":        title,
+                    "venue":       "City Lights Bookstore",
+                    "city":        "San Francisco",
+                    "state":       "CA",
+                    "region":      "west",
+                    "lat":         37.7976,
+                    "lng":        -122.4064,
+                    "type":        "reading",
+                    "date":        event_date.strftime("%Y-%m-%d"),
+                    "time":        evt_time,
+                    "price":       "Free",
+                    "url":         url,
+                    "source":      "citylights",
+                })
+
             browser.close()
     except Exception as e:
         log.error("City Lights Playwright error: %s", e)
         return []
-
-    log.info("City Lights: got %d raw items from browser", len(raw_items))
-
-    # DEBUG — print all raw items in dry-run so we can inspect ts/link values
-    if DRY_RUN:
-        for i, item in enumerate(raw_items):
-            log.info("  [%02d] ts=%-12s  title=%s", i, item.get("ts", "?"), item.get("title", "")[:60])
-            log.info("       link=%s", item.get("link", ""))
-
-    import time as _time
-
-    def _detail_page_matches(detail_url: str) -> bool:
-        """Fetch a City Lights event detail page and check for poetry keywords.
-
-        Individual event pages are NOT Cloudflare-blocked — plain requests works.
-        Returns True if any POETRY_KW found in the page body text.
-        """
-        try:
-            r = requests.get(detail_url, timeout=15, headers={"User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-            )})
-            r.raise_for_status()
-        except Exception as e:
-            log.warning("City Lights detail fetch failed for %s: %s", detail_url, e)
-            return False
-        body = r.text.lower()
-        return any(kw in body for kw in POETRY_KW)
-
-    seen_urls: set[str] = set()
-    for item in raw_items:
-        event_ts = item.get("ts", 0)
-        if not event_ts or not (now_ts <= event_ts <= end_ts):
-            continue
-
-        title = item.get("title", "").strip()
-        url   = item.get("link", "").rstrip("/") + "/"
-        if not title or not url or url in seen_urls:
-            continue
-
-        desc = item.get("desc", "")
-        combined = (title + " " + desc).lower()
-        if not any(kw in combined for kw in POETRY_KW):
-            # Listing page text didn't match — check the full detail page.
-            # Individual event pages are accessible without Cloudflare blocking.
-            _time.sleep(0.5)   # be polite
-            if not _detail_page_matches(url):
-                continue
-            log.info("City Lights: detail-page match for '%s'", title)
-
-        event_date = datetime.fromtimestamp(event_ts, tz=PACIFIC).date()
-        date_text  = item.get("dateText", "")
-        time_m = time_re.search(date_text)
-        evt_time = time_m.group(1).strip().upper() if time_m else "7:00 PM"
-
-        seen_urls.add(url)
-        slug   = re.sub(r"[^a-z0-9]", "", title.lower())[:30]
-        ext_id = f"citylights-{slug}-{event_date.strftime('%Y%m%d')}"
-
-        events.append({
-            "external_id": ext_id,
-            "name":        title,
-            "venue":       "City Lights Bookstore",
-            "city":        "San Francisco",
-            "state":       "CA",
-            "region":      "west",
-            "lat":         37.7976,
-            "lng":        -122.4064,
-            "type":        "reading",
-            "date":        event_date.strftime("%Y-%m-%d"),
-            "time":        evt_time,
-            "price":       "Free",
-            "url":         url,
-            "source":      "citylights",
-        })
 
     log.info("Found %d City Lights poetry events", len(events))
     return events
