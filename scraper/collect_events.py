@@ -350,6 +350,18 @@ POETRY_KW = [
     "reading series", "literary reading",
 ]
 
+# Compiled word-boundary patterns for each keyword.
+# Use poetry_match(text) instead of bare `in` checks to avoid substring false
+# positives — e.g. "verse" inside "diverse", "slam" inside "Amsterdam".
+_POETRY_PATTERNS = [
+    re.compile(r'\b' + re.escape(kw) + r'\b', re.IGNORECASE)
+    for kw in POETRY_KW
+]
+
+def poetry_match(text: str) -> bool:
+    """Return True if any POETRY_KW appears as a whole word in text."""
+    return any(p.search(text) for p in _POETRY_PATTERNS)
+
 
 def fetch_birdbeckett_events() -> list[dict]:
     """Fetch Bird & Beckett's Google Calendar ICS feed and return poetry events."""
@@ -374,7 +386,7 @@ def fetch_birdbeckett_events() -> list[dict]:
 
         # Only keep poetry events — check title + description against shared keyword list
         text = (summary + " " + description).lower()
-        if not any(kw in text for kw in POETRY_KW):
+        if not poetry_match(text):
             continue
 
         dtstart = component.get("DTSTART")
@@ -514,16 +526,22 @@ def fetch_citylights_events() -> list[dict]:
 
                 desc = item.get("desc", "")
                 combined = (title + " " + desc).lower()
-                if not any(kw in combined for kw in POETRY_KW):
+                if not poetry_match(combined):
                     # Listing page text didn't match — load the detail page in the
                     # existing Playwright browser (reuses Cloudflare session).
                     try:
                         page.goto(url, timeout=20_000, wait_until="domcontentloaded")
-                        detail_text = page.inner_text("body").lower()
+                        # Target just the Description tab content — avoids sidebar/footer
+                        # noise (e.g. "verse" in "diverse" appearing in unrelated blog links).
+                        # Fall back to body if the selector isn't found.
+                        try:
+                            detail_text = page.inner_text("#eventDescriptionTab", timeout=3_000).lower()
+                        except Exception:
+                            detail_text = page.inner_text("body").lower()
                     except Exception as e:
                         log.warning("City Lights detail page failed for '%s': %s", title, e)
                         continue
-                    if not any(kw in detail_text for kw in POETRY_KW):
+                    if not poetry_match(detail_text):
                         continue
                     log.info("City Lights: detail-page match for '%s'", title)
 
@@ -647,7 +665,7 @@ def fetch_poetryflash_events() -> list[dict]:
                 continue
 
             # Poetry keyword filter
-            if not any(kw in text_lower for kw in POETRY_KW):
+            if not poetry_match(text_lower):
                 continue
 
             # Event URL — prefer the EVENT PAGE anchor
