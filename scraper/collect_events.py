@@ -363,6 +363,21 @@ def poetry_match(text: str) -> bool:
     return any(p.search(text) for p in _POETRY_PATTERNS)
 
 
+_TYPE_RULES = [
+    ("slam",     re.compile(r'\bslam\b', re.IGNORECASE)),
+    ("open_mic", re.compile(r'\bopen[\s\-]?mic\b', re.IGNORECASE)),
+    ("workshop", re.compile(r'\bworkshop\b', re.IGNORECASE)),
+    ("festival", re.compile(r'\bfestival\b', re.IGNORECASE)),
+]
+
+def classify_type(title: str) -> str:
+    """Infer event type from title keywords; defaults to 'reading'."""
+    for type_name, pattern in _TYPE_RULES:
+        if pattern.search(title):
+            return type_name
+    return "reading"
+
+
 def fetch_birdbeckett_events() -> list[dict]:
     """Fetch Bird & Beckett's Google Calendar ICS feed and return poetry events."""
     try:
@@ -418,7 +433,7 @@ def fetch_birdbeckett_events() -> list[dict]:
             "region":      "west",
             "lat":         37.7310,
             "lng":        -122.4352,
-            "type":        "reading",
+            "type":        classify_type(text),
             "date":        event_date.strftime("%Y-%m-%d"),
             "time":        event_time,
             "price":       "Free",
@@ -526,6 +541,7 @@ def fetch_citylights_events() -> list[dict]:
 
                 desc = item.get("desc", "")
                 combined = (title + " " + desc).lower()
+                full_text = combined   # enriched with detail page if we fetch it
                 if not poetry_match(combined):
                     # Listing page text didn't match — load the detail page in the
                     # existing Playwright browser (reuses Cloudflare session).
@@ -544,6 +560,7 @@ def fetch_citylights_events() -> list[dict]:
                     if not poetry_match(detail_text):
                         continue
                     log.info("City Lights: detail-page match for '%s'", title)
+                    full_text = combined + " " + detail_text
 
                 event_date = datetime.fromtimestamp(event_ts, tz=PACIFIC).date()
                 date_text  = item.get("dateText", "")
@@ -563,7 +580,7 @@ def fetch_citylights_events() -> list[dict]:
                     "region":      "west",
                     "lat":         37.7976,
                     "lng":        -122.4064,
-                    "type":        "reading",
+                    "type":        classify_type(full_text),
                     "date":        event_date.strftime("%Y-%m-%d"),
                     "time":        evt_time,
                     "price":       "Free",
