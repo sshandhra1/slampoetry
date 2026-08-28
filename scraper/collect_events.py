@@ -346,7 +346,7 @@ BIRDBECKETT_ICS = (
 POETRY_KW = [
     "poet", "poetry", "poem", "poems",
     "spoken word", "open mic", "slam",
-    "verse", "haiku", "lyric", "laureate",
+    "verse", "haiku", "lyric", "poet laureate",
     "reading series", "literary reading",
 ]
 
